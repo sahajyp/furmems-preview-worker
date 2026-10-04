@@ -1,0 +1,19 @@
+name = "furmems-preview"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Sites allowed to call this service (comma-separated, no trailing slashes)
+ALLOWED_ORIGINS = "https://furmems.com,https://www.furmems.com,http://localhost:8000"
+# Your Printify shop ID (run: node setup/find-products.mjs shops)
+PRINTIFY_SHOP_ID = ""
+
+# PRINTIFY_TOKEN is a secret. Set it with: npx wrangler secret put PRINTIFY_TOKEN
+
+# Per-visitor limit: 6 mockups per minute per IP address
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+  [ratelimits.simple]
+  limit = 6
+  period = 60
