@@ -6,7 +6,7 @@ compatibility_date = "2026-09-01"
 # Sites allowed to call this service (comma-separated, no trailing slashes)
 ALLOWED_ORIGINS = "https://furmems.com,https://www.furmems.com,http://localhost:8000"
 # Your Printify shop ID (run: node setup/find-products.mjs shops)
-PRINTIFY_SHOP_ID = ""
+PRINTIFY_SHOP_ID = "29137121"
 
 # PRINTIFY_TOKEN is a secret. Set it with: npx wrangler secret put PRINTIFY_TOKEN
 
