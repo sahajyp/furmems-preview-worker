@@ -28,8 +28,8 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true });
-    if (!allowed.includes(origin)) return json({ error: "This preview service only works on furmems.com." }, 403);
     if (request.method === "GET" && url.pathname === "/products") return json(publicProducts());
+    if (!allowed.includes(origin)) return json({ error: "This preview service only works on furmems.com." }, 403);
     if (request.method !== "POST" || url.pathname !== "/mockup") return json({ error: "Not found" }, 404);
 
     if (env.LIMITER) {
