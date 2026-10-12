@@ -1,11 +1,14 @@
 // FurMems Co. preview service (Cloudflare Worker)
 // GET  /products -> product options for the site (labels, variant ids, defaults)
+// GET  /quota    -> how many AI portraits this visitor has left (see ai.js)
+// POST /generate { style, image } -> AI portrait in that style (see ai.js)
 // POST /mockup   { product: "mug", variant: 72183, image: "<base64>", backImage?: "<base64>" }
 //   -> { mockups: ["data:image/jpeg;base64,...", ...] }
 // Holds the Printify token server-side, creates a temporary product to get Printify's
 // real mockups, copies the mockup images, then deletes the product and archives the upload.
 
 import { PRODUCTS } from "./products.js";
+import { quotaStatus, generatePortrait } from "./ai.js";
 
 const API = "https://api.printify.com/v1";
 const MAX_IMAGE_BASE64 = 12 * 1024 * 1024; // ~9 MB image
@@ -30,7 +33,18 @@ export default {
     if (url.pathname === "/health") return json({ ok: true });
     if (request.method === "GET" && url.pathname === "/products") return json(publicProducts());
     if (!allowed.includes(origin)) return json({ error: "This preview service only works on furmems.com." }, 403);
-    if (request.method !== "POST" || url.pathname !== "/mockup") return json({ error: "Not found" }, 404);
+    const route = `${request.method} ${url.pathname}`;
+    const routes = ["GET /quota", "POST /generate", "POST /mockup"];
+    if (!routes.includes(route)) return json({ error: "Not found" }, 404);
+    const failed = (err, fallback) => {
+      console.log(`${route} error:`, err && err.stack ? err.stack : err);
+      return json({ error: (err && err.publicMessage) || fallback, ...((err && err.extra) || {}) }, (err && err.status) || 502);
+    };
+
+    if (route === "GET /quota") {
+      try { return json(await quotaStatus(request, env)); }
+      catch (err) { return failed(err, "Couldn't check your previews."); }
+    }
 
     if (env.LIMITER) {
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
@@ -38,11 +52,15 @@ export default {
       if (!success) return json({ error: "You're making previews quickly. Wait a minute and try again." }, 429);
     }
 
+    if (route === "POST /generate") {
+      try { return json(await generatePortrait(request, env)); }
+      catch (err) { return failed(err, "We couldn't paint your portrait just now. Please try again."); }
+    }
+
     try {
       return json(await makeMockup(request, env, ctx));
     } catch (err) {
-      console.log("mockup error:", err && err.stack ? err.stack : err);
-      return json({ error: (err && err.publicMessage) || "We couldn't make that preview. Please try again." }, (err && err.status) || 502);
+      return failed(err, "We couldn't make that preview. Please try again.");
     }
   },
 };

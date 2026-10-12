@@ -8,7 +8,18 @@ ALLOWED_ORIGINS = "https://furmems.com,https://www.furmems.com,http://localhost:
 # Your Printify shop ID (run: node setup/find-products.mjs shops)
 PRINTIFY_SHOP_ID = "29137121"
 
-# PRINTIFY_TOKEN is a secret. Set it with: npx wrangler secret put PRINTIFY_TOKEN
+# AI portraits (see ai.js)
+OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst" # most faithful to the pet; "gpt-image-2.5-flare" is faster, same price
+OPENAI_IMAGE_QUALITY = "medium"              # low | medium | high
+OPENAI_IMAGE_SIZE = "1024x1536"              # portrait 2:3
+GEN_LIMIT = "4"                              # AI portraits per visitor...
+GEN_WINDOW_MINUTES = "60"                    # ...per this many minutes
+GEN_DAILY_CAP = "100"                        # AI portraits per day for the whole shop (cost ceiling)
+
+# Storage for the AI portrait limits. 
+[[kv_namespaces]]
+binding = "QUOTA"
+id = "e71922bfa3d24c92961f2f969c1e34e2"
 
 # Per-visitor limit: 6 mockups per minute per IP address
 [[ratelimits]]
