@@ -11,14 +11,14 @@
 //   --product   canvas | mug | blanket | ornament
 //   --size      the option to print: a variant id (91648) or its name (18x24, pink, heart, 60x80)
 //   --style     pastel | watercolor | oil | halloween     (needed with --photo)
-//   --engine    flux (default, FLUX.2 Pro on fal.ai) | openai (same model as the website previews)
+//   --engine    openai (default, same model and prompt as the website previews) | flux (FLUX.2 Pro on fal.ai)
 //   --upscaler  topaz (default) | recraft | none
 //   --topaz-model "CGI" (default, made for digital artwork) | "High Fidelity V2" | "Standard V2"
 //   --seed      a number, to repeat a result you liked
 //   --out       folder for the files (default: ..\..\prints, outside your Git repos)
 //   --upload    also add the final file to your Printify media library (needs PRINTIFY_TOKEN)
 //
-// Needs:  FAL_KEY (fal.ai > Dashboard > Keys), OPENAI_API_KEY for --engine openai, PRINTIFY_TOKEN for --upload
+// Needs:  OPENAI_API_KEY (painting), FAL_KEY (fal.ai > Dashboard > Keys, used for upscaling), PRINTIFY_TOKEN for --upload
 //   PowerShell:  $env:FAL_KEY="..."   Mac/Linux: export FAL_KEY="..."
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -37,7 +37,7 @@ for (let i = 0; i < argv.length; i++) {
 
 function usage(msg) {
   if (msg) console.error(msg + "\n");
-  console.log('Usage: node setup/make-print.mjs (--photo <file> --style <style> | --art <file>) --product <product> --size <size> [--engine flux|openai] [--name "Order 1234"] [--upscaler topaz|recraft|none] [--upload]');
+  console.log('Usage: node setup/make-print.mjs (--photo <file> --style <style> | --art <file>) --product <product> --size <size> [--engine openai|flux] [--name "Order 1234"] [--upscaler topaz|recraft|none] [--upload]');
   process.exit(1);
 }
 
@@ -56,12 +56,12 @@ if (!productKey || productKey === true) usage("Missing --product.");
 if (!flags.photo && !flags.art) usage("Give --photo (customer's photo) or --art (approved artwork).");
 if (flags.photo && !flags.style) usage("Missing --style (pastel, watercolor, oil or halloween).");
 const variantId = resolveVariant(productKey, flags.size);
-const engine = flags.engine && flags.engine !== true ? String(flags.engine).toLowerCase() : "flux";
+const engine = flags.engine && flags.engine !== true ? String(flags.engine).toLowerCase() : "openai";
 if (!["flux", "openai"].includes(engine)) usage('--engine must be "flux" or "openai".');
 const falKey = process.env.FAL_KEY;
 const openaiKey = process.env.OPENAI_API_KEY;
 if (!falKey) usage("Set FAL_KEY first (see the top of this file). It's used for upscaling.");
-if (flags.photo && engine === "openai" && !openaiKey) usage("Set OPENAI_API_KEY first for --engine openai.");
+if (flags.photo && engine === "openai" && !openaiKey) usage("Set OPENAI_API_KEY first. It paints the portrait, like the website previews.");
 
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const outDir = path.resolve(flags.out && flags.out !== true ? flags.out : "../../prints");

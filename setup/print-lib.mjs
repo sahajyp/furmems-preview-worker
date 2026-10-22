@@ -1,7 +1,7 @@
 // FurMems Co. print-file pipeline (used by make-print.mjs).
 // 1. Paint the portrait with the SAME prompt as the website (styles.js buildPrompt):
-//      engine "flux"   -> FLUX.2 Pro on fal.ai
-//      engine "openai" -> the same OpenAI model as the website previews
+//      engine "openai" -> the same OpenAI model as the website previews (default)
+//      engine "flux"   -> FLUX.2 Pro on fal.ai (optional)
 // 2. Place the whole portrait on the product's print area with the SAME layout as the website
 //    mockups (products.js), over a soft blurred copy of itself. Nothing is cropped.
 // 3. Upscale that composition (Topaz or Recraft on fal.ai) toward the size Printify needs.
@@ -119,7 +119,7 @@ async function paintWithOpenAI(photo, styleId, { openaiKey, model, quality, fetc
  * Make a print file. Give either `photo` (customer's photo, painted now) or `art` (an approved
  * portrait, e.g. the preview the customer saw on the website).
  */
-export async function makePrint({ photo, art, style, productKey, variantId, engine = "flux", upscaler = "topaz",
+export async function makePrint({ photo, art, style, productKey, variantId, engine = "openai", upscaler = "topaz",
   topazModel = "CGI", falKey, openaiKey, openaiModel = "gpt-image-2.5-sunburst", openaiQuality = "high",
   seed, fetchImpl = fetch, log = () => {} }) {
   const { product, variant, layout } = findVariant(productKey, variantId);
