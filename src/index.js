@@ -70,7 +70,10 @@ function publicProducts() {
   for (const [key, p] of Object.entries(PRODUCTS)) {
     out[key] = {
       label: p.label, optionName: p.optionName, default: p.default, back: !!p.back,
-      options: p.options.filter((o) => o.id && o.width).map((o) => ({ id: o.id, name: o.name, width: o.width, height: o.height })),
+      options: p.options.filter((o) => o.id && o.width).map((o) => ({
+        id: o.id, name: o.name, width: o.width, height: o.height,
+        layout: { scale: 1, dy: 0, ...(p.layout || {}), ...(o.layout || {}) },
+      })),
     };
   }
   return out;

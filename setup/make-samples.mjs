@@ -5,7 +5,7 @@
 // Usage (Node 18+), from the worker folder:
 //   Windows PowerShell:  $env:OPENAI_API_KEY="sk-..."
 //   Mac/Linux:           export OPENAI_API_KEY="sk-..."
-//   node setup/make-samples.mjs <photo.jpg> <Pet name> [--site ../../furmems-site] [--styles pastel,oil] [--quality high]
+//   node setup/make-samples.mjs <photo.jpg> <Pet name> [--note "from a blurry phone photo"] [--site ../../furmems-site] [--styles pastel,oil] [--quality high]
 //
 // Run it once per sample pet. Running it again with the same name replaces that pet.
 // Remove a pet with:  node setup/make-samples.mjs --remove <Pet name>
@@ -13,7 +13,7 @@
 import { readFile, writeFile, mkdir, copyFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { STYLES, PREVIEW_COMPOSITION } from "../src/styles.js";
+import { STYLES, buildPrompt } from "../src/styles.js";
 
 const args = process.argv.slice(2);
 const opt = (name, d) => {
@@ -28,6 +28,7 @@ const only = opt("styles", "");
 const quality = opt("quality", "high");
 const model = opt("model", process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst");
 const removeName = opt("remove", "");
+const note = opt("note", null);
 
 const samplesDir = path.join(site, "samples");
 const jsonPath = path.join(samplesDir, "samples.json");
@@ -56,7 +57,7 @@ if (removeName) {
 const [photoPath, ...nameParts] = args;
 const petName = nameParts.join(" ").trim();
 if (!photoPath || !petName) {
-  console.log("Usage: node setup/make-samples.mjs <photo.jpg> <Pet name> [--site ../../furmems-site] [--styles pastel,oil] [--quality high]");
+  console.log('Usage: node setup/make-samples.mjs <photo.jpg> <Pet name> [--note "from a blurry phone photo"] [--site ../../furmems-site] [--styles pastel,oil] [--quality high]');
   process.exit(1);
 }
 if (!process.env.OPENAI_API_KEY) {
@@ -78,13 +79,14 @@ const styleIds = only ? only.split(",").map((s) => s.trim()).filter((s) => STYLE
 const list = await loadList();
 const entry = list.find((p) => p.id === id) || { id, name: petName, photo: photoFile, art: {} };
 entry.name = petName;
+if (note !== null) entry.note = note;
 entry.photo = photoFile;
 
 for (const styleId of styleIds) {
   process.stdout.write(`Painting ${petName} as ${STYLES[styleId].name}... `);
   const form = new FormData();
   form.append("model", model);
-  form.append("prompt", `${STYLES[styleId].prompt} ${PREVIEW_COMPOSITION}`);
+  form.append("prompt", buildPrompt(styleId));
   form.append("image", new Blob([photo], { type: ext === "png" ? "image/png" : "image/jpeg" }), `pet.${ext}`);
   form.append("size", "1024x1536");
   form.append("quality", quality);

@@ -7,7 +7,7 @@
 // Limits live in Workers KV (binding QUOTA). Visitors are identified by a salted hash of their
 // IP address; raw IPs are never stored.
 
-import { STYLES, PREVIEW_COMPOSITION } from "./styles.js";
+import { STYLES, buildPrompt } from "./styles.js";
 
 const OPENAI_EDITS = "https://api.openai.com/v1/images/edits";
 const MAX_PHOTO_BASE64 = 8 * 1024 * 1024; // ~6 MB photo; the site sends ~1024px JPEGs
@@ -111,7 +111,7 @@ export async function generatePortrait(request, env) {
   try {
     const form = new FormData();
     form.append("model", q.s.model);
-    form.append("prompt", `${style.prompt} ${PREVIEW_COMPOSITION}`);
+    form.append("prompt", buildPrompt(body.style));
     form.append("image", new Blob([base64ToBytes(photo)], { type: "image/jpeg" }), "pet.jpg");
     form.append("size", q.s.size);
     form.append("quality", q.s.quality);

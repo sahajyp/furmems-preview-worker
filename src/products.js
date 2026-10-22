@@ -1,9 +1,16 @@
 // FurMems Co. products for website previews.
 // Each option is one Printify variant: id = variant_id, width/height = print area in pixels.
 // The site reads this list from the Worker (GET /products), so edit it here only.
+//
+// layout: how the 2:3 portrait sits inside each print area. The whole portrait is always shown
+// (never cropped); the space around it is filled with a soft blurred copy of the painting.
+//   scale: portrait size as a share of the print area (1 = touches the nearest edges)
+//   dy:    move the portrait down (+) or up (-) as a share of the print-area height
+// An option's layout overrides its product's layout.
 export const PRODUCTS = {
   canvas: {
     label: "Canvas", optionName: "Size", blueprint_id: 1159, print_provider_id: 99, default: 91643,
+    layout: { scale: 0.9, dy: 0 },            // margin keeps the pet off the wrapped canvas sides
     options: [
       { id: 91640, name: '9" × 12"',  width: 2700, height: 3600 },
       { id: 91643, name: '12" × 16"', width: 3600, height: 4800 },
@@ -13,6 +20,7 @@ export const PRODUCTS = {
   },
   mug: {
     label: "Mug", optionName: "Color", blueprint_id: 635, print_provider_id: 99, default: 72183,
+    layout: { scale: 0.94, dy: 0 },           // full height of the pet, centered on the wrap
     options: [
       { id: 72183,  name: "Pink",        width: 2475, height: 1155 },
       { id: 105888, name: "Light blue",  width: 2475, height: 1155 },
@@ -22,6 +30,7 @@ export const PRODUCTS = {
   },
   blanket: {
     label: "Woven blanket", optionName: "Size", blueprint_id: 1626, print_provider_id: 99, default: 112794,
+    layout: { scale: 0.86, dy: 0 },           // blankets lose a little at the hemmed edges
     options: [
       { id: 112794, name: '52" × 37"', width: 4992, height: 3552 },
       { id: 399290, name: '60" × 80"', width: 5760, height: 7680 },
@@ -31,8 +40,10 @@ export const PRODUCTS = {
     label: "Ornament", optionName: "Shape", blueprint_id: 1632, print_provider_id: 99, default: 112959,
     back: true, // front and back are both printable; the back carries the pet's name
     options: [
-      { id: 112959, name: "Round", width: 900, height: 900 },
-      { id: 148368, name: "Heart", width: 962, height: 908 },
+      // Lower than center so the hanging hole at the top stays clear of the pet
+      { id: 112959, name: "Round", width: 900, height: 900, layout: { scale: 0.72, dy: 0.05 } },
+      // Hearts narrow toward the bottom point, so the pet is smaller
+      { id: 148368, name: "Heart", width: 962, height: 908, layout: { scale: 0.6, dy: 0.04 } },
     ],
   },
 };
