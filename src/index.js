@@ -2,13 +2,14 @@
 // GET  /products -> product options for the site (labels, variant ids, defaults)
 // GET  /quota    -> how many AI portraits this visitor has left (see ai.js)
 // POST /generate { style, image } -> AI portrait in that style (see ai.js)
+// POST /extend   { image, mask } -> the portrait's background extended to a product shape (see ai.js)
 // POST /mockup   { product: "mug", variant: 72183, image: "<base64>", backImage?: "<base64>" }
 //   -> { mockups: ["data:image/jpeg;base64,...", ...] }
 // Holds the Printify token server-side, creates a temporary product to get Printify's
 // real mockups, copies the mockup images, then deletes the product and archives the upload.
 
-import { PRODUCTS } from "./products.js";
-import { quotaStatus, generatePortrait } from "./ai.js";
+import { PRODUCTS, optionLayout, extensionGroup, extensionSize } from "./products.js";
+import { quotaStatus, generatePortrait, extendBackground } from "./ai.js";
 
 const API = "https://api.printify.com/v1";
 const MAX_IMAGE_BASE64 = 12 * 1024 * 1024; // ~9 MB image
@@ -34,7 +35,7 @@ export default {
     if (request.method === "GET" && url.pathname === "/products") return json(publicProducts());
     if (!allowed.includes(origin)) return json({ error: "This preview service only works on furmems.com." }, 403);
     const route = `${request.method} ${url.pathname}`;
-    const routes = ["GET /quota", "POST /generate", "POST /mockup"];
+    const routes = ["GET /quota", "POST /generate", "POST /extend", "POST /mockup"];
     if (!routes.includes(route)) return json({ error: "Not found" }, 404);
     const failed = (err, fallback) => {
       console.log(`${route} error:`, err && err.stack ? err.stack : err);
@@ -44,6 +45,12 @@ export default {
     if (route === "GET /quota") {
       try { return json(await quotaStatus(request, env)); }
       catch (err) { return failed(err, "Couldn't check your previews."); }
+    }
+
+    // Extensions have their own per-visitor limits in ai.js (a painted portrait asks for several at once)
+    if (route === "POST /extend") {
+      try { return json(await extendBackground(request, env)); }
+      catch (err) { return failed(err, "Couldn't extend the background."); }
     }
 
     if (env.LIMITER) {
@@ -72,7 +79,7 @@ function publicProducts() {
       label: p.label, optionName: p.optionName, default: p.default, back: !!p.back,
       options: p.options.filter((o) => o.id && o.width).map((o) => ({
         id: o.id, name: o.name, width: o.width, height: o.height,
-        layout: { scale: 1, dy: 0, ...(p.layout || {}), ...(o.layout || {}) },
+        layout: optionLayout(key, o), group: extensionGroup(key, o), extSize: extensionSize(o),
       })),
     };
   }

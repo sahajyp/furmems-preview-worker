@@ -1,7 +1,8 @@
 // Make the print-ready file for a paid FurMems order.
 //
 // Paints the portrait with the SAME prompt as the website, places the whole pet on the product with the
-// SAME layout as the website mockups, then upscales it (Topaz by default).
+// SAME layout as the website mockups, extends the painting's own background to every edge of the product
+// (the pet itself is never changed), then upscales it (Topaz by default).
 //   node setup/make-print.mjs --photo "C:\orders\bella.jpg" --style pastel --product canvas --size 18x24 --name "Order 1234 Bella"
 //
 // Or upscale artwork the customer already approved (e.g. their website preview):
@@ -14,11 +15,12 @@
 //   --engine    openai (default, same model and prompt as the website previews) | flux (FLUX.2 Pro on fal.ai)
 //   --upscaler  topaz (default) | recraft | none
 //   --topaz-model "CGI" (default, made for digital artwork) | "High Fidelity V2" | "Standard V2"
+//   --no-extend skip the AI background extension (fills around the portrait with a soft blur instead)
 //   --seed      a number, to repeat a result you liked
 //   --out       folder for the files (default: ..\..\prints, outside your Git repos)
 //   --upload    also add the final file to your Printify media library (needs PRINTIFY_TOKEN)
 //
-// Needs:  OPENAI_API_KEY (painting), FAL_KEY (fal.ai > Dashboard > Keys, used for upscaling), PRINTIFY_TOKEN for --upload
+// Needs:  OPENAI_API_KEY (painting and background extension), FAL_KEY (fal.ai > Dashboard > Keys, used for upscaling), PRINTIFY_TOKEN for --upload
 //   PowerShell:  $env:FAL_KEY="..."   Mac/Linux: export FAL_KEY="..."
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -62,6 +64,8 @@ const falKey = process.env.FAL_KEY;
 const openaiKey = process.env.OPENAI_API_KEY;
 if (!falKey) usage("Set FAL_KEY first (see the top of this file). It's used for upscaling.");
 if (flags.photo && engine === "openai" && !openaiKey) usage("Set OPENAI_API_KEY first. It paints the portrait, like the website previews.");
+const extend = !flags["no-extend"];
+if (extend && !openaiKey) usage("Set OPENAI_API_KEY first (it extends the background to the product's edges), or add --no-extend.");
 
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const outDir = path.resolve(flags.out && flags.out !== true ? flags.out : "../../prints");
@@ -74,16 +78,18 @@ const result = await makePrint({
   style: flags.style, productKey, variantId, engine, openaiKey,
   upscaler: flags.upscaler && flags.upscaler !== true ? flags.upscaler : "topaz",
   topazModel: flags["topaz-model"] && flags["topaz-model"] !== true ? flags["topaz-model"] : "CGI",
-  seed: flags.seed, falKey, log: (m) => console.log(m),
+  extend, seed: flags.seed, falKey, log: (m) => console.log(m),
 }).catch((e) => { console.error("\n" + e.message); process.exit(1); });
 
 await mkdir(outDir, { recursive: true });
 const base = [slug(name), flags.style || "approved", flags.art ? "" : engine, productKey, slug(result.variant)].filter(Boolean).join("-");
 const artFile = path.join(outDir, `${base}-art.${result.art.type === "png" ? "png" : "jpg"}`);
 const layoutFile = path.join(outDir, `${base}-layout.png`);
+const extFile = path.join(outDir, `${base}-background.png`);
 const printFile = path.join(outDir, `${base}-PRINT.${result.final.type === "png" ? "png" : "jpg"}`);
 if (!flags.art) await writeFile(artFile, result.art.bytes);
 await writeFile(layoutFile, result.layoutFile.bytes);
+if (result.extension) await writeFile(extFile, result.extension.bytes);
 await writeFile(printFile, result.final.bytes);
 
 // Rough cost from fal's published prices
@@ -92,6 +98,7 @@ let cost = 0;
 for (const s of result.steps) {
   if (s.step === "flux-2-pro") cost += 0.03 + 0.015 * (mp(s.width, s.height) - 1 + mp(s.inputWidth || 1000, s.inputHeight || 1000));
   if (s.step === "openai") cost += 0.08; // rough: high quality portrait; see your OpenAI usage page for exact
+  if (s.step === "openai-extend") cost += 0.08; // rough: high quality background extension
   if (s.step === "topaz") cost += 0.08 * Math.ceil((s.width * s.height) / 24e6);
   if (s.step === "recraft") cost += 0.004;
 }
@@ -104,6 +111,7 @@ ${result.product}, ${result.variant}
   Saved:                ${printFile}
   Layout preview:       ${layoutFile}${flags.art ? "" : `\n  Portrait (send as the proof): ${artFile}`}
   Took ${Math.round((Date.now() - started) / 1000)}s, about $${cost.toFixed(2)}${result.steps[0] && result.steps[0].seed !== undefined ? `, seed ${result.steps[0].seed}` : ""}`);
+if (result.extendError) console.log(`  Note: the background extension didn't work (${result.extendError}), so a soft blurred background was used. Run again to retry.`);
 if (pct < 50) console.log("  Note: this is well below full resolution. Check Printify's quality indicator before ordering, or choose a smaller size.");
 const mb = result.final.bytes.length / 1048576;
 if (mb > 95) console.log(`  Warning: the print file is ${mb.toFixed(0)} MB, over Printify's 100 MB upload limit. Run again with --upscaler topaz (it makes a smaller JPEG).`);

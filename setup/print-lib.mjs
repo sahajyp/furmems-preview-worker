@@ -3,13 +3,16 @@
 //      engine "openai" -> the same OpenAI model as the website previews (default)
 //      engine "flux"   -> FLUX.2 Pro on fal.ai (optional)
 // 2. Place the whole portrait on the product's print area with the SAME layout as the website
-//    mockups (products.js), over a soft blurred copy of itself. Nothing is cropped.
+//    mockups (products.js). The space around it is filled by extending the painting's own background
+//    to every edge (extend-lib.mjs, OpenAI), with the original portrait pasted back on top, so the pet
+//    is never moved, stretched or changed. Nothing is cropped. (Fallback: a soft blurred copy.)
 // 3. Upscale that composition (Topaz or Recraft on fal.ai) toward the size Printify needs.
 // Only plain fetch and Node built-ins are used, so there is nothing to install.
 
 import { PRODUCTS } from "../src/products.js";
 import { STYLES, buildPrompt } from "../src/styles.js";
 import { decodePng, encodePng, composeOnArea } from "./image.mjs";
+import { extendForOption } from "./extend-lib.mjs";
 
 export const FAL_RUN = "https://fal.run/";
 const FLUX_SIZE = { width: 1344, height: 2016 };       // 2:3 portrait, like the website previews
@@ -115,13 +118,21 @@ async function paintWithOpenAI(photo, styleId, { openaiKey, model, quality, fetc
   throw lastErr;
 }
 
+// JPEG -> PNG (these scripts can only read PNG), via Topaz at 1x on fal.ai
+export async function toPng(bytes, { falKey, topazModel = "CGI", fetchImpl = fetch }) {
+  if (imageSize(bytes).type === "png") return bytes;
+  const out = await falRun("fal-ai/topaz/upscale/image", { image_url: dataUri(bytes), model: topazModel, upscale_factor: 1, output_format: "png", face_enhancement: false }, { falKey, fetchImpl });
+  if (!out.image || !out.image.url) throw new Error("Topaz returned no image.");
+  return download(out.image.url, fetchImpl);
+}
+
 /**
  * Make a print file. Give either `photo` (customer's photo, painted now) or `art` (an approved
  * portrait, e.g. the preview the customer saw on the website).
  */
 export async function makePrint({ photo, art, style, productKey, variantId, engine = "openai", upscaler = "topaz",
   topazModel = "CGI", falKey, openaiKey, openaiModel = "gpt-image-2.5-sunburst", openaiQuality = "high",
-  seed, fetchImpl = fetch, log = () => {} }) {
+  extend = true, extendQuality = "high", seed, fetchImpl = fetch, log = () => {} }) {
   const { product, variant, layout } = findVariant(productKey, variantId);
   const target = { width: variant.width, height: variant.height };
   const steps = [];
@@ -132,9 +143,7 @@ export async function makePrint({ photo, art, style, productKey, variantId, engi
     artBytes = art;
     if (imageSize(art).type !== "png") {
       log("Converting the approved artwork to PNG (Topaz 1x)...");
-      const out = await falRun("fal-ai/topaz/upscale/image", { image_url: dataUri(art), model: topazModel, upscale_factor: 1, output_format: "png", face_enhancement: false }, { falKey, fetchImpl });
-      if (!out.image || !out.image.url) throw new Error("Topaz returned no image.");
-      artBytes = await download(out.image.url, fetchImpl);
+      artBytes = await toPng(art, { falKey, topazModel, fetchImpl });
       steps.push({ step: "topaz", ...imageSize(artBytes) });
     }
     log(`Using the approved artwork (${imageSize(artBytes).width}x${imageSize(artBytes).height}).`);
@@ -150,8 +159,19 @@ export async function makePrint({ photo, art, style, productKey, variantId, engi
   }
 
   // 2. Place the whole portrait on the print area, same layout as the website mockups
+  const artImg = decodePng(artBytes);
+  let ext = null, extendError = null;
+  if (extend) {
+    try {
+      ext = await extendForOption(artImg, productKey, variant, { openaiKey, model: openaiModel, quality: extendQuality, longSide: 2048, fetchImpl, log });
+      steps.push({ step: "openai-extend", width: ext.image.width, height: ext.image.height, usage: ext.usage });
+    } catch (e) {
+      extendError = e.message;
+      log(`  Warning: ${e.message}. Using the soft blurred background instead.`);
+    }
+  }
   log(`Placing it on the ${product.label.toLowerCase()} (${variant.name}) print area...`);
-  const composed = composeOnArea(decodePng(artBytes), target.width, target.height, layout);
+  const composed = composeOnArea(artImg, target.width, target.height, layout, ext ? { backdrop: ext.image, feather: 0.02 } : {});
   const layoutBytes = encodePng(composed);
 
   // 3. Upscale toward Printify's full resolution
@@ -182,6 +202,7 @@ export async function makePrint({ photo, art, style, productKey, variantId, engi
   return {
     product: product.label, variant: variant.name, variantId: variant.id, target, layout, engine: art ? "approved art" : engine,
     art: { bytes: artBytes, ...imageSize(artBytes) },
+    extension: ext ? { bytes: ext.bytes, width: ext.image.width, height: ext.image.height } : null, extendError,
     layoutFile: { bytes: layoutBytes, width: composed.width, height: composed.height, type: "png" },
     final: { bytes: finalBytes, url: finalUrl, ...finalSize },
     upscaler: used, coverage, steps,

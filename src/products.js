@@ -47,3 +47,27 @@ export const PRODUCTS = {
     ],
   },
 };
+
+// ---- Shared helpers (Worker, website and local scripts) ----
+
+export function optionLayout(productKey, option) {
+  const p = PRODUCTS[productKey];
+  return { scale: 1, dy: 0, ...(p.layout || {}), ...(option.layout || {}) };
+}
+
+// Options that share a shape and layout share one AI-extended background
+// ("canvas" covers every canvas size; blankets and ornaments get one per option).
+export function extensionGroup(productKey, option) {
+  const p = PRODUCTS[productKey];
+  const ratio = (o) => o.width / o.height;
+  const same = p.options.every((o) => !o.layout && Math.abs(ratio(o) - ratio(p.options[0])) < 0.005);
+  return same ? productKey : `${productKey}-${option.id}`;
+}
+
+// Size of the AI-extended background for an option: the print area's shape, long side 1536,
+// in multiples of 16 (what the image model accepts)
+export function extensionSize(option, longSide = 1536) {
+  const a = option.width / option.height;
+  const r16 = (v) => Math.max(256, Math.round(v / 16) * 16);
+  return a >= 1 ? { width: r16(longSide), height: r16(longSide / a) } : { width: r16(longSide * a), height: r16(longSide) };
+}
