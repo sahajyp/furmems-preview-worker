@@ -7,15 +7,16 @@
 //   Windows PowerShell:  $env:OPENAI_API_KEY="sk-..."
 //   Mac/Linux:           export OPENAI_API_KEY="sk-..."
 //   node setup/make-samples.mjs <photo.jpg> <Pet name> [--note "from a blurry phone photo"] [--site ../../furmems-site]
-//        [--styles pastel,oil] [--quality high] [--no-extend]
+//        [--styles pastel,oil] [--quality high] [--no-extend] [--force]
 //
 // Run it once per sample pet. Running it again with the same name replaces that pet.
 // The note under the slideshow ("Sample: Bella · <note>") only shows when you pass --note.
 //
-// Add the product backgrounds to pets you already made (no repainting):
+// Add or fix the product backgrounds of pets you already made (no repainting):
 //   node setup/make-samples.mjs --extend-only <Pet name>      (or --extend-only all)
-//   Uses the full-quality PNG saved in ..\..\sample-masters when there is one; otherwise it converts the
-//   website JPEG to PNG with Topaz on fal.ai first, so it also needs FAL_KEY.
+//   Backgrounds you already have are checked for free and lined up with the product layout; only missing
+//   or bad ones (black edges, a pet that moved or changed) are made again. Add --force to remake them all.
+//   Uses the full-quality PNG saved in ..\..\sample-masters when there is one, otherwise the website JPEG.
 //
 // Remove a pet with:  node setup/make-samples.mjs --remove <Pet name>
 
@@ -24,7 +25,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { STYLES, buildPrompt } from "../src/styles.js";
 import { decodePng, resize, artRect } from "./image.mjs";
-import { encodeJpeg } from "./jpeg.mjs";
+import { encodeJpeg, decodeJpeg } from "./jpeg.mjs";
+import { checkExtension } from "./align.mjs";
 import { extensionGroups, extendForOption } from "./extend-lib.mjs";
 import { toPng } from "./print-lib.mjs";
 
@@ -61,33 +63,51 @@ async function saveList(list) {
   console.log(`Updated ${path.relative(process.cwd(), jsonPath)} (${list.length} sample pet${list.length === 1 ? "" : "s"})`);
 }
 
-// Extend one painting's background to every product shape; small JPEGs for the website
+// Extend one painting's background to every product shape; small JPEGs for the website.
+// Backgrounds already made are checked (and lined up again); only missing or bad ones are made again,
+// unless --force is given.
 const SITE_LONG_SIDE = 1024;
+const force = flag("force");
 async function extendAll(entry, styleId, artImg) {
   const groups = extensionGroups();
   entry.ext = entry.ext || {};
   entry.ext[styleId] = entry.ext[styleId] || {};
-  let ok = 0;
+  const tally = { checked: 0, made: 0, failed: 0 };
+  const save = (g, image, m) => {
+    const f = (v, d) => Math.round((v / d) * 10000) / 10000;
+    return { w: image.width, h: image.height, box: [f(m.x, image.width), f(m.y, image.height), f(m.w, image.width), f(m.h, image.height)], fit: 2 };
+  };
   const run = async (g) => {
+    const file = `samples/${entry.id}-${styleId}-${g.group}.jpg`;
+    const old = entry.ext[styleId][g.group];
+    // 1. A background we already have: check it and measure where the pet is
+    if (!force && old && old.src && existsSync(path.join(site, old.src))) {
+      try {
+        const img = decodeJpeg(await readFile(path.join(site, old.src)));
+        const placed = artRect(artImg.width, artImg.height, img.width, img.height, g.layout);
+        const c = checkExtension(img, artImg, placed);
+        if (c.ok) { entry.ext[styleId][g.group] = { src: old.src, ...save(g, img, c.box) }; tally.checked++; return; }
+        console.log(`\n  ${g.group}: ${c.reason}; making it again.`);
+      } catch (e) { console.log(`\n  ${g.group}: couldn't check it (${e.message}); making it again.`); }
+    }
+    // 2. Make it (retries bad results)
     try {
-      const r = await extendForOption(artImg, g.productKey, g.option, { openaiKey, model, quality: extQuality });
+      const r = await extendForOption(artImg, g.productKey, g.option, { openaiKey, model, quality: extQuality,
+        log: (m) => { if (/Try|Connection|mask/.test(m)) console.log(`\n  ${g.group}:${m}`); } });
+      if (!r.ok) { console.log(`\n  ${g.group}: still not right after ${r.tries} tries (${r.reason}); the site will use the soft blur for it.`); tally.failed++; delete entry.ext[styleId][g.group]; return; }
       const k = SITE_LONG_SIDE / Math.max(r.image.width, r.image.height);
       const small = k < 1 ? resize(r.image, Math.round(r.image.width * k), Math.round(r.image.height * k)) : r.image;
-      const file = `samples/${entry.id}-${styleId}-${g.group}.jpg`;
-      await writeFile(path.join(site, file), encodeJpeg(small, 85));
-      // where the portrait sits in this background (shares of its width and height), for the website
-      const b = artRect(artImg.width, artImg.height, r.image.width, r.image.height, g.layout);
-      const f = (v, d) => Math.round((v / d) * 10000) / 10000;
-      entry.ext[styleId][g.group] = { src: file, w: small.width, h: small.height,
-        box: [f(b.x, r.image.width), f(b.y, r.image.height), f(b.w, r.image.width), f(b.h, r.image.height)] };
-      ok++;
+      await writeFile(path.join(site, file), encodeJpeg(small, 88));
+      const m = { x: r.box.x * (small.width / r.image.width), y: r.box.y * (small.height / r.image.height), w: r.box.w * (small.width / r.image.width), h: r.box.h * (small.height / r.image.height) };
+      entry.ext[styleId][g.group] = { src: file, ...save(g, small, m) };
+      tally.made++;
     } catch (e) {
-      console.log(`\n  ${g.group}: ${e.message}`);
+      console.log(`\n  ${g.group}: ${e.message}`); tally.failed++;
     }
   };
   // three at a time
   for (let i = 0; i < groups.length; i += 3) await Promise.all(groups.slice(i, i + 3).map(run));
-  console.log(`  product backgrounds: ${ok}/${groups.length}`);
+  console.log(`  product backgrounds: ${tally.checked + tally.made}/${groups.length} ready (${tally.checked} checked, ${tally.made} new${tally.failed ? `, ${tally.failed} failed` : ""})`);
 }
 
 if (!existsSync(path.join(site, "index.html"))) {
@@ -117,16 +137,20 @@ if (extendOnly) {
       if (only && !only.split(",").includes(styleId)) continue;
       console.log(`${pet.name}, ${STYLES[styleId] ? STYLES[styleId].name : styleId}:`);
       const master = path.join(masters, `${pet.id}-${styleId}.png`);
-      let png;
-      if (existsSync(master)) png = await readFile(master);
+      let artImg;
+      if (existsSync(master)) artImg = decodePng(await readFile(master));
       else {
-        if (!process.env.FAL_KEY) { console.error("  No PNG master for this painting; set FAL_KEY so it can be converted."); process.exit(1); }
-        process.stdout.write("  converting the website JPEG to PNG (Topaz)... ");
-        png = await toPng(await readFile(path.join(site, file)), { falKey: process.env.FAL_KEY });
-        await writeFile(master, png);
-        console.log("done");
+        const jpg = await readFile(path.join(site, file));
+        try { artImg = decodeJpeg(jpg); } catch (_) { // e.g. a progressive JPEG: convert it with Topaz instead
+          if (!process.env.FAL_KEY) { console.error("  Couldn't read this painting's JPEG; set FAL_KEY so it can be converted."); process.exit(1); }
+          process.stdout.write("  converting the website JPEG to PNG (Topaz)... ");
+          const png = await toPng(jpg, { falKey: process.env.FAL_KEY });
+          await writeFile(master, png);
+          artImg = decodePng(png);
+          console.log("done");
+        }
       }
-      await extendAll(pet, styleId, decodePng(png));
+      await extendAll(pet, styleId, artImg);
       await saveList(list); // save as we go
     }
   }

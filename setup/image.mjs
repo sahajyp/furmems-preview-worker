@@ -1,6 +1,6 @@
 // Minimal image tools for the print pipeline, in plain Node (no packages needed):
 // read/write 8-bit PNGs, and place artwork on a print area exactly like the website does
-// (whole artwork fitted by the product's layout, over a soft blurred copy of itself).
+// (whole artwork fitted by the product's layout, on its AI-extended background or a soft blurred copy of itself).
 
 import zlib from "node:zlib";
 
@@ -134,6 +134,8 @@ export function artRect(artW, artH, W, H, layout = {}) {
  *   backdrop: an image (same shape as the area) to fill around the art, e.g. an AI-extended background.
  *             Without it, a soft blurred copy of the art is used.
  *   feather:  soften the art's edges into the backdrop (share of the art's shorter side, e.g. 0.02)
+ *   edge:     fill around the art by pulling its edge outward (fading into its blurred colours); used for
+ *             the AI extension's input
  * Returns { width, height, data, artBox }.
  */
 export function composeOnArea(art, areaW, areaH, layout = {}, opts = {}) {
@@ -166,8 +168,17 @@ export function composeOnArea(art, areaW, areaH, layout = {}, opts = {}) {
         if (back) bilinear(back, (x + 0.5) * bsx - 0.5, (y + 0.5) * bsy - 0.5, bg, 0);
         else {
           bilinear(t, (x - ox + 0.5) / cs - 0.5, (y - oy + 0.5) / cs - 0.5, bg, 0);
-          // same soft cream wash as the website (25%)
-          bg[0] = bg[0] * 0.75 + 255 * 0.25; bg[1] = bg[1] * 0.75 + 249 * 0.25; bg[2] = bg[2] * 0.75 + 244 * 0.25;
+          if (opts.edge) {
+            // AI input: the painting's own edge pulled outward, fading into its blurred colours with distance,
+            // so the AI continues the painting instead of drawing a border around it
+            const cx = Math.min(Math.max(x, box.x), box.x + box.w - 1), cy = Math.min(Math.max(y, box.y), box.y + box.h - 1);
+            bilinear(art, (cx - box.x + 0.5) * s - 0.5, (cy - box.y + 0.5) * s - 0.5, px, 0);
+            const dist = Math.hypot(x - cx, y - cy), k = Math.min(0.85, dist / (0.25 * Math.min(W, H)));
+            bg[0] = px[0] * (1 - k) + bg[0] * k; bg[1] = px[1] * (1 - k) + bg[1] * k; bg[2] = px[2] * (1 - k) + bg[2] * k;
+          } else {
+            // same soft cream wash as the website (25%)
+            bg[0] = bg[0] * 0.75 + 255 * 0.25; bg[1] = bg[1] * 0.75 + 249 * 0.25; bg[2] = bg[2] * 0.75 + 244 * 0.25;
+          }
         }
       }
       if (alpha > 0) bilinear(art, (x - box.x + 0.5) * s - 0.5, (y - box.y + 0.5) * s - 0.5, px, 0);
@@ -180,8 +191,8 @@ export function composeOnArea(art, areaW, areaH, layout = {}, opts = {}) {
 }
 
 // Mask for the AI background extension: transparent = repaint (around the art), opaque = keep.
-// The opaque area is inset a little so the AI can blend the seam.
-export function extensionMask(W, H, box, inset = 0.015) {
+// The opaque area is inset so the AI repaints a band just inside the painting's edge and blends it seamlessly.
+export function extensionMask(W, H, box, inset = 0.04) {
   const d = Buffer.alloc(W * H * 4), m = inset * Math.min(box.w, box.h);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const o = (y * W + x) * 4;
@@ -209,4 +220,36 @@ export function resize(img, w, h) {
     const o = (y * w + x) * 3; out[o] = px[0]; out[o + 1] = px[1]; out[o + 2] = px[2];
   }
   return { width: w, height: h, data: out };
+}
+
+// Placement of an AI-extended image on an area so the painting inside it (measured box m, in the extended
+// image's pixels) lands exactly on the layout's art box B (in the area's pixels): same position, same size.
+// If that leaves a thin gap at an edge, the image's outermost pixels are pulled out to fill it (bilinear
+// sampling clamps to the edge).
+// Returns { k, mcx, mcy, bcx, bcy }: area pixel (x, y) shows extended-image pixel (mcx + (x - bcx) * k, ...).
+export function extPlacement(ext, m, B) {
+  return { k: m.w / B.w, mcx: m.x + m.w / 2, mcy: m.y + m.h / 2, bcx: B.x + B.w / 2, bcy: B.y + B.h / 2 };
+}
+
+/**
+ * Product image from an AI-extended background: the AI's image is used as ONE seamless piece (nothing pasted
+ * on top), lined up so the pet sits exactly where the layout puts it. Same output size rule as composeOnArea.
+ * art: the portrait (for the size rule), ext: the extended image, m: measured art box in ext.
+ */
+export function composeExtended(art, ext, m, areaW, areaH, layout = {}, opts = {}) {
+  let W, H;
+  if (opts.size) { W = opts.size.width; H = opts.size.height; }
+  else {
+    const fit = Math.min((areaW * (layout.scale || 1)) / art.width, (areaH * (layout.scale || 1)) / art.height);
+    const k = Math.min(1, 1 / fit);
+    W = Math.max(1, Math.round(areaW * k)); H = Math.max(1, Math.round(areaH * k));
+  }
+  const B = artRect(art.width, art.height, W, H, layout);
+  const p = extPlacement(ext, m, B);
+  const out = Buffer.alloc(W * H * 3), px = new Float64Array(3);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    bilinear(ext, p.mcx + (x + 0.5 - p.bcx) * p.k - 0.5, p.mcy + (y + 0.5 - p.bcy) * p.k - 0.5, px, 0);
+    const o = (y * W + x) * 3; out[o] = px[0]; out[o + 1] = px[1]; out[o + 2] = px[2];
+  }
+  return { width: W, height: H, data: out, artBox: B };
 }

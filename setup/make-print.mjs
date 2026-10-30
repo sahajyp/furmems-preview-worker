@@ -109,7 +109,7 @@ ${result.product}, ${result.variant}
   Printify print area:  ${result.target.width} x ${result.target.height}
   Your print file:      ${result.final.width} x ${result.final.height}  (${pct}% of full resolution${result.upscaler !== "none" ? `, upscaled with ${result.upscaler}` : ""})
   Saved:                ${printFile}
-  Layout preview:       ${layoutFile}${flags.art ? "" : `\n  Portrait (send as the proof): ${artFile}`}
+  On the product (send this as the proof): ${layoutFile}${flags.art ? "" : `\n  Portrait on its own:  ${artFile}`}
   Took ${Math.round((Date.now() - started) / 1000)}s, about $${cost.toFixed(2)}${result.steps[0] && result.steps[0].seed !== undefined ? `, seed ${result.steps[0].seed}` : ""}`);
 if (result.extendError) console.log(`  Note: the background extension didn't work (${result.extendError}), so a soft blurred background was used. Run again to retry.`);
 if (pct < 50) console.log("  Note: this is well below full resolution. Check Printify's quality indicator before ordering, or choose a smaller size.");

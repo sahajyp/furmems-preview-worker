@@ -132,3 +132,118 @@ export function encodeJpeg({ width, height, data }, quality = 88) {
 // natural index for each zigzag position (DQT tables are written in zigzag order)
 const ZIGZAGINV = new Array(64);
 for (let i = 0; i < 64; i++) ZIGZAGINV[ZIGZAG[i]] = i;
+
+// ---------- Baseline JPEG decoder (enough for the files these scripts write, and most camera/web JPEGs) ----------
+// Returns { width, height, data } (RGB). Progressive JPEGs are not supported (an error says so).
+const ZZ_NAT = [0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+  35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63];
+const IDCT_COS = (() => { const t = new Float64Array(64); for (let x = 0; x < 8; x++) for (let u = 0; u < 8; u++) t[x * 8 + u] = (u === 0 ? Math.SQRT1_2 : 1) * Math.cos(((2 * x + 1) * u * Math.PI) / 16) / 2; return t; })();
+function idct8x8(inp, out) {
+  const tmp = new Float64Array(64);
+  for (let y = 0; y < 8; y++) for (let u = 0; u < 8; u++) { // rows: over v
+    let s = 0; for (let v = 0; v < 8; v++) s += IDCT_COS[y * 8 + v] * inp[v * 8 + u]; tmp[y * 8 + u] = s;
+  }
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+    let s = 0; for (let u = 0; u < 8; u++) s += IDCT_COS[x * 8 + u] * tmp[y * 8 + u];
+    out[y * 8 + x] = s;
+  }
+}
+export function decodeJpeg(input) {
+  const b = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (b[0] !== 0xff || b[1] !== 0xd8) throw new Error("Not a JPEG file.");
+  const qt = [], hts = { 0: [], 1: [] };
+  let frame = null, restart = 0, pos = 2;
+  const u16 = (p) => (b[p] << 8) | b[p + 1];
+  const buildHuff = (bits, vals) => { // map "len:code" -> value
+    const map = new Map(); let code = 0, k = 0;
+    for (let len = 1; len <= 16; len++) { for (let i = 0; i < bits[len - 1]; i++) map.set((len << 16) | code++, vals[k++]); code <<= 1; }
+    return map;
+  };
+  while (pos < b.length) {
+    if (b[pos] !== 0xff) { pos++; continue; }
+    const m = b[pos + 1];
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7) || m === 0xff) { pos += m === 0xff ? 1 : 2; continue; }
+    if (m === 0xd9) break;
+    const len = u16(pos + 2), seg = pos + 4, end = pos + 2 + len;
+    if (m === 0xdb) {
+      let p = seg;
+      while (p < end) { const pq = b[p] >> 4, id = b[p] & 15; p++; const t = new Int32Array(64);
+        for (let i = 0; i < 64; i++) { t[ZZ_NAT[i]] = pq ? u16(p + i * 2) : b[p + i]; } p += pq ? 128 : 64; qt[id] = t; }
+    } else if (m === 0xc4) {
+      let p = seg;
+      while (p < end) { const cls = b[p] >> 4, id = b[p] & 15; const bits = Array.from(b.subarray(p + 1, p + 17)); const n = bits.reduce((a, c) => a + c, 0);
+        hts[cls][id] = buildHuff(bits, Array.from(b.subarray(p + 17, p + 17 + n))); p += 17 + n; }
+    } else if (m === 0xc0 || m === 0xc1) {
+      const nc = b[seg + 5], comps = [];
+      for (let i = 0; i < nc; i++) { const o = seg + 6 + i * 3; comps.push({ id: b[o], h: b[o + 1] >> 4, v: b[o + 1] & 15, tq: b[o + 2] }); }
+      frame = { height: u16(seg + 1), width: u16(seg + 3), comps };
+    } else if (m === 0xc2 || m === 0xc3 || (m >= 0xc5 && m <= 0xcf && m !== 0xc8 && m !== 0xcc)) {
+      throw new Error("Progressive or unusual JPEGs aren't supported here.");
+    } else if (m === 0xdd) restart = u16(seg);
+    else if (m === 0xda) {
+      if (!frame) throw new Error("Bad JPEG.");
+      const ns = b[seg], sc = [];
+      for (let i = 0; i < ns; i++) { const c = frame.comps.find((x) => x.id === b[seg + 1 + i * 2]); c.td = b[seg + 2 + i * 2] >> 4; c.ta = b[seg + 2 + i * 2] & 15; sc.push(c); }
+      pos = decodeScan(b, end, frame, sc, qt, hts, restart);
+      continue;
+    }
+    pos = end;
+  }
+  if (!frame || !frame.comps[0].pixels) throw new Error("Bad JPEG (no image data).");
+  // assemble RGB
+  const { width: W, height: H, comps } = frame, hmax = Math.max(...comps.map((c) => c.h)), vmax = Math.max(...comps.map((c) => c.v));
+  const out = Buffer.alloc(W * H * 3);
+  const sample = (c, x, y) => { const sx = Math.min(c.bw - 1, Math.floor((x * c.h) / hmax)), sy = Math.min(c.bh - 1, Math.floor((y * c.v) / vmax)); return c.pixels[sy * c.bw + sx]; };
+  const clamp = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const o = (y * W + x) * 3;
+    if (comps.length === 1) { out[o] = out[o + 1] = out[o + 2] = clamp(Math.round(sample(comps[0], x, y))); continue; }
+    const Y = sample(comps[0], x, y), cb = sample(comps[1], x, y) - 128, cr = sample(comps[2], x, y) - 128;
+    out[o] = clamp(Math.round(Y + 1.402 * cr)); out[o + 1] = clamp(Math.round(Y - 0.344136 * cb - 0.714136 * cr)); out[o + 2] = clamp(Math.round(Y + 1.772 * cb));
+  }
+  return { width: W, height: H, data: out };
+}
+function decodeScan(b, start, frame, sc, qt, hts, restart) {
+  const hmax = Math.max(...frame.comps.map((c) => c.h)), vmax = Math.max(...frame.comps.map((c) => c.v));
+  const mcux = Math.ceil(frame.width / (8 * hmax)), mcuy = Math.ceil(frame.height / (8 * vmax));
+  for (const c of frame.comps) { c.bw = mcux * c.h * 8; c.bh = mcuy * c.v * 8; c.pixels = c.pixels || new Float64Array(c.bw * c.bh); c.pred = 0; }
+  let pos = start, bitBuf = 0, bitCnt = 0;
+  const readBit = () => {
+    if (bitCnt === 0) {
+      let byte = b[pos++];
+      if (byte === 0xff) { const nx = b[pos]; if (nx === 0) pos++; else if (nx >= 0xd0 && nx <= 0xd7) { byte = 0; } }
+      bitBuf = byte; bitCnt = 8;
+    }
+    bitCnt--; return (bitBuf >> bitCnt) & 1;
+  };
+  const decodeHuff = (map) => { let code = 0; for (let len = 1; len <= 16; len++) { code = (code << 1) | readBit(); const v = map.get((len << 16) | code); if (v !== undefined) return v; } throw new Error("Bad JPEG data."); };
+  const receive = (n) => { let v = 0; for (let i = 0; i < n; i++) v = (v << 1) | readBit(); return v; };
+  const extend = (v, n) => (n && v < 1 << (n - 1) ? v - (1 << n) + 1 : v);
+  const coef = new Float64Array(64), px = new Float64Array(64);
+  const total = mcux * mcuy;
+  for (let mcu = 0; mcu < total; mcu++) {
+    if (restart && mcu > 0 && mcu % restart === 0) {
+      bitCnt = 0; while (pos < b.length && !(b[pos] === 0xff && b[pos + 1] >= 0xd0 && b[pos + 1] <= 0xd7)) pos++; pos += 2;
+      for (const c of sc) c.pred = 0;
+    }
+    const mx = mcu % mcux, my = Math.floor(mcu / mcux);
+    for (const c of sc) {
+      const q = qt[c.tq], dc = hts[0][c.td], ac = hts[1][c.ta];
+      for (let by = 0; by < c.v; by++) for (let bx = 0; bx < c.h; bx++) {
+        coef.fill(0);
+        const t = decodeHuff(dc); c.pred += extend(receive(t), t); coef[0] = c.pred * q[0];
+        for (let k = 1; k < 64;) {
+          const rs = decodeHuff(ac), r = rs >> 4, s = rs & 15;
+          if (!s) { if (r === 15) { k += 16; continue; } break; }
+          k += r; const nat = ZZ_NAT[k]; coef[nat] = extend(receive(s), s) * q[nat]; k++;
+        }
+        idct8x8(coef, px);
+        const x0 = (mx * c.h + bx) * 8, y0 = (my * c.v + by) * 8;
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) c.pixels[(y0 + y) * c.bw + x0 + x] = px[y * 8 + x] + 128;
+      }
+    }
+  }
+  // find the next marker after the entropy data
+  while (pos < b.length - 1 && !(b[pos] === 0xff && b[pos + 1] !== 0 && !(b[pos + 1] >= 0xd0 && b[pos + 1] <= 0xd7))) pos++;
+  return pos;
+}

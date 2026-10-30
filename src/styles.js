@@ -60,16 +60,20 @@ export const STYLES = {
 };
 
 // Background extension: used when a portrait is placed on a product whose shape differs from the 2:3 art.
-// The model gets the artwork centered on the product shape plus a mask; it repaints only the empty margins
-// so the painting's own background reaches every edge. The original art is pasted back on top afterwards,
-// so the pet itself is never changed. Same prompt for the website and for print files.
+// The model gets the artwork centered on the product shape (its edges pulled outward as a placeholder) plus a mask.
+// Its whole result is used as ONE seamless image (nothing is pasted on top afterwards, so there is no visible
+// rectangle), and the scripts measure where the pet ended up and line it up with the product layout, so the
+// pet keeps its position and size. Same prompt for the website, the sample pets and the print files.
 export const EXTEND_PROMPT =
-  "This is a painting placed in the middle of a larger canvas; the area around it is only a blurred placeholder. " +
-  "Repaint the placeholder areas (the transparent areas of the mask) by extending the painting's own background " +
-  "outward to every edge and corner: continue the same colors, patterns, textures, brushstrokes and lighting " +
-  "seamlessly, so it looks like one larger painting in the same style. Keep everything inside the painting exactly " +
-  "as it is: do not move, resize, redraw or change the pet or anything else. Do not add any new animals, people, " +
-  "objects, text, lettering, frames or borders, and do not repeat or mirror the pet.";
+  "This image is a finished painting placed in the middle of a larger canvas; the stretched, blurry area around it is " +
+  "only a placeholder. Turn the whole canvas into ONE seamless painting: repaint the placeholder areas by continuing the " +
+  "painting's own background outward to every edge and corner, with the same colors, patterns, textures, brushstrokes " +
+  "and lighting, and blend smoothly across the edges of the original painting so there is no visible border, frame, " +
+  "rectangle, seam or change in lighting where it used to end. Keep the pet exactly as it is: the same position, the " +
+  "same size, the same pose, likeness, colors and markings; do not move, resize or redraw it differently. Every " +
+  "background element (a moon, the sky, trees, pumpkins, flowers and so on) appears only once: continue it, never " +
+  "repeat or duplicate it. Fill every edge and corner completely; never leave any area black, empty or transparent. " +
+  "Do not add any new animals, people, objects, text, lettering, frames or borders, and do not repeat or mirror the pet.";
 
 export function buildPrompt(styleId) {
   const s = STYLES[styleId];

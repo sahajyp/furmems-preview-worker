@@ -204,7 +204,8 @@ export async function extendBackground(request, env) {
   if (q.public.shopLimitReached || q.public.remaining <= 0) throw fail("Background extension limit reached.", 429);
   await writeCounts(env, q, q.used + 1, q.dayUsed + 1);
 
-  const call = async (withMask) => {
+  // background "opaque": the extended areas must be painted, never left transparent
+  const call = async (withMask, opaque = true) => {
     const form = new FormData();
     form.append("model", s.model);
     form.append("prompt", EXTEND_PROMPT);
@@ -214,6 +215,7 @@ export async function extendBackground(request, env) {
     form.append("quality", s.extQuality);
     form.append("output_format", "jpeg");
     form.append("output_compression", "90");
+    if (opaque) form.append("background", "opaque");
     form.append("n", "1");
     const res = await fetch(OPENAI_EDITS, {
       method: "POST",
@@ -228,12 +230,16 @@ export async function extendBackground(request, env) {
   };
 
   try {
-    let r = await call(true);
     const msg = (x) => String((x.data && x.data.error && x.data.error.message) || x.text || "");
-    // If the model doesn't accept the mask, the prompt alone still describes the job
-    if (!r.res.ok && r.res.status === 400 && /mask/i.test(msg(r))) {
-      console.log("extend: mask rejected, retrying without it:", msg(r).slice(0, 300));
-      r = await call(false);
+    let withMask = true, opaque = true;
+    let r = await call(withMask, opaque);
+    // If the model doesn't accept an option, drop it and try again (the prompt alone still describes the job)
+    for (let i = 0; i < 2 && !r.res.ok && r.res.status === 400; i++) {
+      if (opaque && /background/i.test(msg(r))) opaque = false;
+      else if (withMask && /mask/i.test(msg(r))) withMask = false;
+      else break;
+      console.log("extend: option rejected, retrying without it:", msg(r).slice(0, 300));
+      r = await call(withMask, opaque);
     }
     if (!r.res.ok) {
       console.log(`OpenAI extend ${r.res.status}: ${msg(r).slice(0, 600)}`);

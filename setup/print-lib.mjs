@@ -3,15 +3,15 @@
 //      engine "openai" -> the same OpenAI model as the website previews (default)
 //      engine "flux"   -> FLUX.2 Pro on fal.ai (optional)
 // 2. Place the whole portrait on the product's print area with the SAME layout as the website
-//    mockups (products.js). The space around it is filled by extending the painting's own background
-//    to every edge (extend-lib.mjs, OpenAI), with the original portrait pasted back on top, so the pet
-//    is never moved, stretched or changed. Nothing is cropped. (Fallback: a soft blurred copy.)
+//    mockups (products.js). The painting's own background is extended to every edge by OpenAI
+//    (extend-lib.mjs) as one seamless image, lined up so the pet keeps its exact position and size.
+//    Nothing is cropped or stretched. (Fallback if that fails: a soft blurred copy around the portrait.)
 // 3. Upscale that composition (Topaz or Recraft on fal.ai) toward the size Printify needs.
 // Only plain fetch and Node built-ins are used, so there is nothing to install.
 
 import { PRODUCTS } from "../src/products.js";
 import { STYLES, buildPrompt } from "../src/styles.js";
-import { decodePng, encodePng, composeOnArea } from "./image.mjs";
+import { decodePng, encodePng, composeOnArea, composeExtended } from "./image.mjs";
 import { extendForOption } from "./extend-lib.mjs";
 
 export const FAL_RUN = "https://fal.run/";
@@ -57,14 +57,26 @@ export function dataUri(buf) {
   return `data:${mime};base64,${Buffer.from(buf).toString("base64")}`;
 }
 
+// Retry a request a few times when the connection drops (ECONNRESET and similar)
+async function withRetry(fn, tries = 4) {
+  for (let i = 1; ; i++) {
+    try { return await fn(); } catch (e) {
+      const network = e && (e.name === "TypeError" || (e.cause && e.cause.code)) && !e.isHttp;
+      if (!network || i >= tries) throw e;
+      console.log(`  Connection problem (${(e.cause && e.cause.code) || e.message}); trying again in ${3 * i}s...`);
+      await new Promise((ok) => setTimeout(ok, 3000 * i));
+    }
+  }
+}
+
 async function falRun(model, input, { falKey, fetchImpl = fetch, timeoutMs = 300000 }) {
   if (!falKey) throw new Error("Set FAL_KEY first.");
-  const res = await fetchImpl(FAL_RUN + model, {
+  const res = await withRetry(() => fetchImpl(FAL_RUN + model, {
     method: "POST",
     headers: { Authorization: `Key ${falKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(timeoutMs),
-  });
+  }));
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -76,9 +88,11 @@ async function falRun(model, input, { falKey, fetchImpl = fetch, timeoutMs = 300
 }
 
 async function download(url, fetchImpl = fetch) {
-  const res = await fetchImpl(url);
-  if (!res.ok) throw new Error(`Download failed (${res.status}): ${url}`);
-  return new Uint8Array(await res.arrayBuffer());
+  return withRetry(async () => {
+    const res = await fetchImpl(url);
+    if (!res.ok) { const e = new Error(`Download failed (${res.status}): ${url}`); e.isHttp = true; throw e; }
+    return new Uint8Array(await res.arrayBuffer());
+  });
 }
 
 async function paintWithFlux(photo, styleId, { falKey, seed, fetchImpl, log }) {
@@ -164,14 +178,17 @@ export async function makePrint({ photo, art, style, productKey, variantId, engi
   if (extend) {
     try {
       ext = await extendForOption(artImg, productKey, variant, { openaiKey, model: openaiModel, quality: extendQuality, longSide: 2048, fetchImpl, log });
-      steps.push({ step: "openai-extend", width: ext.image.width, height: ext.image.height, usage: ext.usage });
+      for (let t = 0; t < ext.tries; t++) steps.push({ step: "openai-extend", width: ext.image.width, height: ext.image.height });
+      if (!ext.ok) { extendError = `the extended background didn't pass the checks (${ext.reason})`; log(`  Warning: ${extendError}. Using the soft blurred background instead.`); }
     } catch (e) {
       extendError = e.message;
       log(`  Warning: ${e.message}. Using the soft blurred background instead.`);
     }
   }
   log(`Placing it on the ${product.label.toLowerCase()} (${variant.name}) print area...`);
-  const composed = composeOnArea(artImg, target.width, target.height, layout, ext ? { backdrop: ext.image, feather: 0.02 } : {});
+  const composed = ext && ext.ok
+    ? composeExtended(artImg, ext.image, ext.box, target.width, target.height, layout)
+    : composeOnArea(artImg, target.width, target.height, layout);
   const layoutBytes = encodePng(composed);
 
   // 3. Upscale toward Printify's full resolution
